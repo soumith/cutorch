@@ -1,7 +1,7 @@
 SET(src
     THCGeneral.c THCStorage.c THCStorageCopy.c THCTensor.c THCTensorCopy.c)
 
-SET(src-cuda THC.cu)
+SET(src-cuda THC.cu THCReduceApplyUtils.cu THCTensorSort.cu)
 
 CUDA_ADD_LIBRARY(THC SHARED ${src} ${src-cuda})
 CUDA_ADD_CUBLAS_TO_TARGET(THC)
@@ -23,4 +23,8 @@ INSTALL(FILES
           THCTensorRandom.h
           THCTensorMath.h
           THCTensorConv.h
+          THCTensorSort.h
+          THCApply.cuh
+          THCReduce.cuh
+          THCReduceApplyUtils.cuh
           DESTINATION "${Torch_INSTALL_INCLUDE_SUBDIR}/THC")

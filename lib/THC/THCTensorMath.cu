@@ -3,6 +3,8 @@
 #include "THCBlas.h"
 #include "THCTensorCopy.h"
 #include "THCTensorRandom.h"
+#include "THCApply.cuh"
+#include "THCReduce.cuh"
 
 #include <thrust/device_ptr.h>
 #include <thrust/fill.h>
@@ -10,27 +12,39 @@
 #include <thrust/reduce.h>
 #include <thrust/inner_product.h>
 
-#define NB_THREADS_PER_BLOCK 256
-
 #ifndef DIVUP
 #define DIVUP(x, y) (((x) + (y) - 1) / (y))
 #endif
 
-void THCudaTensor_fill(THCState *state, THCudaTensor *self_, float value)
+struct TensorFillOp {
+  TensorFillOp(float v) : val(v) {}
+  __device__ __forceinline__ void operator()(float* v) { *v = val; }
+
+  const float val;
+};
+
+void THCudaTensor_fill(THCState* state, THCudaTensor *self_, float value)
 {
-  THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-  thrust::device_ptr<float> self_data(THCudaTensor_data(state, self));
+  if (!THCudaTensor_pointwiseApply1(state, self_, TensorFillOp(value))) {
+    THArgCheck(false, 1, CUTORCH_DIM_WARNING);
+  }
 
-  thrust::fill(self_data, self_data+THCudaTensor_nElement(state, self), value);
-
-  THCudaTensor_freeCopyTo(state, self, self_);
+  THCudaCheck(cudaGetLastError());
 }
 
 void THCudaTensor_zero(THCState *state, THCudaTensor *self_)
 {
-  THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-  THCudaCheck(cudaMemset(THCudaTensor_data(state, self), 0, sizeof(float)*THCudaTensor_nElement(state, self)));
-  THCudaTensor_freeCopyTo(state, self, self_);
+  if (THCudaTensor_isContiguous(state, self_)) {
+    THCudaCheck(cudaMemsetAsync(THCudaTensor_data(state, self_),
+                                0,
+                                sizeof(float) * THCudaTensor_nElement(state, self_)));
+  } else {
+    if (!THCudaTensor_pointwiseApply1(state, self_, TensorFillOp(0))) {
+      THArgCheck(false, 1, CUTORCH_DIM_WARNING);
+    }
+  }
+
+  THCudaCheck(cudaGetLastError());
 }
 
 void THCudaTensor_zeros(THCState *state, THCudaTensor *r_, THLongStorage *size)
@@ -56,188 +70,253 @@ long THCudaTensor_numel(THCState *state, THCudaTensor *t)
   return THCudaTensor_nElement(state, t);
 }
 
-
-struct addvalue_functor
-{
-  const float value;
-
-  addvalue_functor(float value_) : value(value_) {}
-
-    __host__ __device__ float operator()(const float& x) const
-  {
-    return (x+value);
+struct TensorAddConstantOp {
+  TensorAddConstantOp(float v) : val(v) {}
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    *out = *in + val;
   }
+
+  __device__ __forceinline__ void operator()(float* v) {
+    *v += val;
+  }
+
+  const float val;
 };
 
 void THCudaTensor_add(THCState *state, THCudaTensor *self_, THCudaTensor *src_, float value)
 {
-  THCudaTensor_resizeAs(state, self_, src_);
-  THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-  THCudaTensor *src = THCudaTensor_newContiguous(state, src_);
-  long size = THCudaTensor_nElement(state, self);
-  thrust::device_ptr<float> self_data(THCudaTensor_data(state, self));
-  thrust::device_ptr<float> src_data(THCudaTensor_data(state, src));
+  if (self_ == src_) {
+    if (!THCudaTensor_pointwiseApply1(state, self_, TensorAddConstantOp(value))) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  } else {
+    THCudaTensor_resizeAs(state, self_, src_);
 
-  thrust::transform(src_data, src_data+size, self_data, addvalue_functor(value));
+    if (!THCudaTensor_pointwiseApply2(state, self_, src_, TensorAddConstantOp(value))) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  }
 
-  THCudaTensor_free(state, src);
-  THCudaTensor_freeCopyTo(state, self, self_);
+  THCudaCheck(cudaGetLastError());
 }
 
-struct mulvalue_functor
-{
-  const float value;
-  mulvalue_functor(float value_) : value(value_) {}
-    __host__ __device__ float operator()(const float& x) const
-  {
-    return (x*value);
+struct TensorMulConstantOp {
+  TensorMulConstantOp(float v) : val(v) {}
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    *out = *in * val;
   }
+
+  __device__ __forceinline__ void operator()(float* v) {
+    *v *= val;
+  }
+
+  const float val;
 };
 
 void THCudaTensor_mul(THCState *state, THCudaTensor *self_, THCudaTensor *src_, float value)
 {
-  THCudaTensor_resizeAs(state, self_, src_);
-  THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-  THCudaTensor *src = THCudaTensor_newContiguous(state, src_);
-  long size = THCudaTensor_nElement(state, self);
-  thrust::device_ptr<float> self_data(THCudaTensor_data(state, self));
-  thrust::device_ptr<float> src_data(THCudaTensor_data(state, src));
+  if (self_ == src_) {
+    if (!THCudaTensor_pointwiseApply1(state, self_, TensorMulConstantOp(value))) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  } else {
+    THCudaTensor_resizeAs(state, self_, src_);
 
-  thrust::transform(src_data, src_data+size, self_data, mulvalue_functor(value));
+    if (!THCudaTensor_pointwiseApply2(state, self_, src_, TensorMulConstantOp(value))) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  }
 
-  THCudaTensor_free(state, src);
-  THCudaTensor_freeCopyTo(state, self, self_);
+  THCudaCheck(cudaGetLastError());
 }
 
-struct divvalue_functor
+void THCudaTensor_div(THCState* state, THCudaTensor *self_, THCudaTensor *src_, float value)
 {
-  const float value;
-  divvalue_functor(float value_) : value(value_) {}
-    __host__ __device__ float operator()(const float& x) const
-  {
-    return (x/value);
+  THArgCheck(value != 0.0f, 3, "divide by zero");
+
+  if (self_ == src_) {
+    if (!THCudaTensor_pointwiseApply1(state, self_, TensorMulConstantOp(1.0f / value))) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  } else {
+    THCudaTensor_resizeAs(state, self_, src_);
+
+    if (!THCudaTensor_pointwiseApply2(state, self_, src_, TensorMulConstantOp(1.0f / value))) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  }
+
+  THCudaCheck(cudaGetLastError());
+}
+
+struct TensorAddOp {
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    *out += *in;
+  }
+
+  __device__ __forceinline__ void operator()(float* out, float* in1, float* in2) {
+    *out = *in1 + *in2;
   }
 };
 
-void THCudaTensor_div(THCState *state, THCudaTensor *self_, THCudaTensor *src_, float value)
-{
-  THCudaTensor_resizeAs(state, self_, src_);
-  THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-  THCudaTensor *src = THCudaTensor_newContiguous(state, src_);
-  long size = THCudaTensor_nElement(state, self);
-  thrust::device_ptr<float> self_data(THCudaTensor_data(state, self));
-  thrust::device_ptr<float> src_data(THCudaTensor_data(state, src));
+struct TensorCAddOp {
+  TensorCAddOp(float v) : val(v) {}
 
-  thrust::transform(src_data, src_data+size, self_data, divvalue_functor(value));
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    *out += val * *in;
+  }
 
-  THCudaTensor_free(state, src);
-  THCudaTensor_freeCopyTo(state, self, self_);
-}
+  __device__ __forceinline__ void operator()(float* out, float* in1, float* in2) {
+    *out = *in1 + val * *in2;
+  }
+
+  float val;
+};
 
 void THCudaTensor_cadd(THCState *state, THCudaTensor *self_, THCudaTensor* src1, float value, THCudaTensor *src2)
 {
-  THCudaTensor_resizeAs(state, self_, src1);
-  THArgCheck(THCudaTensor_nElement(state, src1) == THCudaTensor_nElement(state, src2), 3, "size do not match");
-  {
-    THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
+  THArgCheck(THCudaTensor_nElement(state, src1) ==
+             THCudaTensor_nElement(state, src2), 3, "sizes do not match");
 
-    if (self_ != src1) {
-      src1 = THCudaTensor_newContiguous(state, src1);
-      THCudaTensor_copy(state, self, src1);
-      THCudaTensor_free(state, src1);
+  if (self_ == src1) {
+    if (value == 1.0f) {
+      // self += src2
+      if (!THCudaTensor_pointwiseApply2(state, self_, src2, TensorAddOp())) {
+        THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+      }
+    } else {
+      // self += value * src2
+      if (!THCudaTensor_pointwiseApply2(state, self_, src2, TensorCAddOp(value))) {
+        THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+      }
     }
+  } else {
+    THCudaTensor_resizeAs(state, self_, src1);
 
-    src2 = THCudaTensor_newContiguous(state, src2);
-
-    THCudaBlas_axpy(state,
-                    THCudaTensor_nElement(state, self), value,
-                    THCudaTensor_data(state, src2), 1,
-                    THCudaTensor_data(state, self), 1);
-
-    THCudaTensor_free(state, src2);
-    THCudaTensor_freeCopyTo(state, self, self_);
+    if (value == 1.0f) {
+      // self = src1 + src2
+      if (!THCudaTensor_pointwiseApply3(state, self_, src1, src2, TensorAddOp())) {
+        THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+      }
+    } else {
+      // self = src1 + value * src2
+      if (!THCudaTensor_pointwiseApply3(state, self_, src1, src2, TensorCAddOp(value))) {
+        THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+      }
+    }
   }
+
+  THCudaCheck(cudaGetLastError());
 }
+
+struct TensorMulOp {
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    *out *= *in;
+  }
+
+  __device__ __forceinline__ void operator()(float* out, float* in1, float* in2) {
+    *out = *in1 * *in2;
+  }
+};
 
 void THCudaTensor_cmul(THCState *state, THCudaTensor *self_, THCudaTensor *src1, THCudaTensor *src2)
 {
-  THCudaTensor_resizeAs(state, self_, src1);
-  THArgCheck(THCudaTensor_nElement(state, src1) == THCudaTensor_nElement(state, src2), 3, "size do not match");
-  {
-    THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-    long size = THCudaTensor_nElement(state, self);
-    src1 = THCudaTensor_newContiguous(state, src1);
-    src2 = THCudaTensor_newContiguous(state, src2);
-    thrust::device_ptr<float> self_data(THCudaTensor_data(state, self));
-    thrust::device_ptr<float> src1_data(THCudaTensor_data(state, src1));
-    thrust::device_ptr<float> src2_data(THCudaTensor_data(state, src2));
+  THArgCheck(THCudaTensor_nElement(state, src1) ==
+             THCudaTensor_nElement(state, src2), 3, "sizes do not match");
 
-    thrust::transform(src2_data, src2_data+size, src1_data, self_data, thrust::multiplies<float>());
+  if (self_ == src1) {
+    // self *= src2
+    if (!THCudaTensor_pointwiseApply2(state, self_, src2, TensorMulOp())) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  } else {
+    THCudaTensor_resizeAs(state, self_, src1);
 
-    THCudaTensor_free(state, src1);
-    THCudaTensor_free(state, src2);
-    THCudaTensor_freeCopyTo(state, self, self_);
+    // self = src1 * src2
+    if (!THCudaTensor_pointwiseApply3(state, self_, src1, src2, TensorMulOp())) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
   }
+
+  THCudaCheck(cudaGetLastError());
 }
 
-struct cpow_functor
-{
-  __host__ __device__ float operator()(const float& a, const float& b) const
-  {
-    return pow(a, b);
+struct TensorCPowOp {
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    *out = powf(*out, *in);
+  }
+
+  __device__ __forceinline__ void operator()(float* out, float* in1, float* in2) {
+    *out = powf(*in1, *in2);
   }
 };
 
 void THCudaTensor_cpow(THCState *state, THCudaTensor *self_, THCudaTensor *src1, THCudaTensor *src2)
 {
-  THCudaTensor_resizeAs(state, self_, src1);
-  THArgCheck(THCudaTensor_nElement(state, src1) == THCudaTensor_nElement(state, src2), 3, "size does not match");
+  THArgCheck(THCudaTensor_nElement(state, src1) ==
+             THCudaTensor_nElement(state, src2), 3, "sizes do not match");
 
-  THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-  long size = THCudaTensor_nElement(state, self);
-  src1 = THCudaTensor_newContiguous(state, src1);
-  src2 = THCudaTensor_newContiguous(state, src2);
+  if (self_ == src1) {
+    // self = pow(self, src2)
+    if (!THCudaTensor_pointwiseApply2(state, self_, src2, TensorCPowOp())) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  } else {
+    THCudaTensor_resizeAs(state, self_, src1);
 
-  thrust::device_ptr<float> self_data(THCudaTensor_data(state, self));
-  thrust::device_ptr<float> src1_data(THCudaTensor_data(state, src1));
-  thrust::device_ptr<float> src2_data(THCudaTensor_data(state, src2));
-
-  thrust::transform(src1_data, src1_data + size, src2_data, self_data, cpow_functor());
-
-  THCudaTensor_free(state, src1);
-  THCudaTensor_free(state, src2);
-  THCudaTensor_freeCopyTo(state, self, self_);
-}
-
-void THCudaTensor_cdiv(THCState *state, THCudaTensor *self_, THCudaTensor *src1, THCudaTensor *src2)
-{
-  THCudaTensor_resizeAs(state, self_, src1);
-  THArgCheck(THCudaTensor_nElement(state, src1) == THCudaTensor_nElement(state, src2), 3, "size does not match");
-  {
-    THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-    long size = THCudaTensor_nElement(state, self);
-    src1 = THCudaTensor_newContiguous(state, src1);
-    src2 = THCudaTensor_newContiguous(state, src2);
-    thrust::device_ptr<float> self_data(THCudaTensor_data(state, self));
-    thrust::device_ptr<float> src1_data(THCudaTensor_data(state, src1));
-    thrust::device_ptr<float> src2_data(THCudaTensor_data(state, src2));
-
-    thrust::transform(src1_data, src1_data+size, src2_data, self_data, thrust::divides<float>());
-
-    THCudaTensor_free(state, src1);
-    THCudaTensor_free(state, src2);
-    THCudaTensor_freeCopyTo(state, self, self_);
+    // self = pow(src1, src2)
+    if (!THCudaTensor_pointwiseApply3(state, self_, src1, src2, TensorCPowOp())) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
   }
+
+  THCudaCheck(cudaGetLastError());
 }
 
-__global__ void THCudaTensor_kernel_addcmul(float *data, float value, float *src1, float *src2, long size)
+struct TensorDivOp {
+  __device__ __forceinline__ void
+  operator()(float* out, float* in) {
+    *out /= *in;
+  }
+
+  __device__ __forceinline__ void
+  operator()(float* out, float* in1, float* in2) {
+    *out = *in1 / *in2;
+  }
+};
+
+void THCudaTensor_cdiv(THCState* state, THCudaTensor *self_, THCudaTensor *src1, THCudaTensor *src2)
 {
-  long k = (((blockIdx.y * gridDim.x) + blockIdx.x) * blockDim.x) + threadIdx.x;
+  THArgCheck(THCudaTensor_nElement(state, src1) ==
+             THCudaTensor_nElement(state, src2), 3, "sizes do not match");
 
-  if(k < size)
-    data[k] += value*src1[k]*src2[k];
+  if (self_ == src1) {
+    // self *= src2
+    if (!THCudaTensor_pointwiseApply2(state, self_, src2, TensorDivOp())) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  } else {
+    THCudaTensor_resizeAs(state, self_, src1);
+
+    // self = src1 * src2
+    if (!THCudaTensor_pointwiseApply3(state, self_, src1, src2, TensorDivOp())) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  }
+
+  THCudaCheck(cudaGetLastError());
 }
 
+struct TensorAddCMulOp {
+  TensorAddCMulOp(float v) : val(v) {}
+
+  __device__ __forceinline__ void
+  operator()(float* out, float* in1, float* in2) {
+    *out += val * *in1 * *in2;
+  }
+
+  float val;
+};
 
 void THCudaTensor_addcmul(THCState *state, THCudaTensor *self_, THCudaTensor *t, float value, THCudaTensor *src1, THCudaTensor *src2)
 {
@@ -247,38 +326,27 @@ void THCudaTensor_addcmul(THCState *state, THCudaTensor *self_, THCudaTensor *t,
     THCudaTensor_copy(state, self_, t);
   }
   THCudaTensor_resizeAs(state, self_, src1);
-  THArgCheck(THCudaTensor_nElement(state, src1) == THCudaTensor_nElement(state, src2), 3, "size do not match");
-  {
-    THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-    long size = THCudaTensor_nElement(state, self);
-    src1 = THCudaTensor_newContiguous(state, src1);
-    src2 = THCudaTensor_newContiguous(state, src2);
 
-    int nBlockPerRow, nBlockPerColumn, nThreadPerBlock;
-    THCudaGetGridSize(&nBlockPerRow, &nBlockPerColumn, &nThreadPerBlock, size);
-    dim3 threads(nThreadPerBlock);
-    dim3 grid(nBlockPerRow, nBlockPerColumn);
+  THArgCheck(THCudaTensor_nElement(state, src1) ==
+             THCudaTensor_nElement(state, src2), 3, "sizes do not match");
 
-    THCudaTensor_kernel_addcmul<<<grid, threads>>>(THCudaTensor_data(state, self), value, THCudaTensor_data(state, src1), THCudaTensor_data(state, src2), size);
-
-    cudaError errcode = cudaGetLastError();
-    if(errcode != cudaSuccess)
-      THError(cudaGetErrorString(errcode));
-
-    THCudaTensor_free(state, src1);
-    THCudaTensor_free(state, src2);
-    THCudaTensor_freeCopyTo(state, self, self_);
+  if (!THCudaTensor_pointwiseApply3(state, self_, src1, src2, TensorAddCMulOp(value))) {
+    THArgCheck(false, 2, CUTORCH_DIM_WARNING);
   }
+
+  THCudaCheck(cudaGetLastError());
 }
 
-__global__ void THCudaTensor_kernel_addcdiv(float *data, float value, float *src1, float *src2, long size)
-{
-  long k = (((blockIdx.y * gridDim.x) + blockIdx.x) * blockDim.x) + threadIdx.x;
+struct TensorAddCDivOp {
+  TensorAddCDivOp(float v) : val(v) {}
 
-  if(k < size)
-    data[k] += value*src1[k]/src2[k];
-}
+  __device__ __forceinline__ void
+  operator()(float* out, float* in1, float* in2) {
+    *out += val * *in1 / *in2;
+  }
 
+  float val;
+};
 
 void THCudaTensor_addcdiv(THCState *state, THCudaTensor *self_, THCudaTensor *t, float value, THCudaTensor *src1, THCudaTensor *src2)
 {
@@ -289,33 +357,18 @@ void THCudaTensor_addcdiv(THCState *state, THCudaTensor *self_, THCudaTensor *t,
   }
 
   THCudaTensor_resizeAs(state, self_, src1);
-  THArgCheck(THCudaTensor_nElement(state, src1) == THCudaTensor_nElement(state, src2), 3, "size do not match");
-  {
-    THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-    long size = THCudaTensor_nElement(state, self);
-    src1 = THCudaTensor_newContiguous(state, src1);
-    src2 = THCudaTensor_newContiguous(state, src2);
+  THArgCheck(THCudaTensor_nElement(state, src1) == THCudaTensor_nElement(state, src2), 3, "sizes do not match");
 
-    int nBlockPerRow, nBlockPerColumn, nThreadPerBlock;
-    THCudaGetGridSize(&nBlockPerRow, &nBlockPerColumn, &nThreadPerBlock, size);
-    dim3 threads(nThreadPerBlock);
-    dim3 grid(nBlockPerRow, nBlockPerColumn);
-
-    THCudaTensor_kernel_addcdiv<<<grid, threads>>>(THCudaTensor_data(state, self), value, THCudaTensor_data(state, src1), THCudaTensor_data(state, src2), size);
-
-    cudaError errcode = cudaGetLastError();
-    if(errcode != cudaSuccess)
-      THError(cudaGetErrorString(errcode));
-
-    THCudaTensor_free(state, src1);
-    THCudaTensor_free(state, src2);
-    THCudaTensor_freeCopyTo(state, self, self_);
+  if (!THCudaTensor_pointwiseApply3(state, self_, src1, src2, TensorAddCDivOp(value))) {
+    THArgCheck(false, 2, CUTORCH_DIM_WARNING);
   }
+
+  THCudaCheck(cudaGetLastError());
 }
 
 float THCudaTensor_dot(THCState *state, THCudaTensor *self, THCudaTensor *src)
 {
-  THArgCheck(THCudaTensor_nElement(state, self) == THCudaTensor_nElement(state, src), 2, "size do not match");
+  THArgCheck(THCudaTensor_nElement(state, self) == THCudaTensor_nElement(state, src), 2, "sizes do not match");
 
   {
     self = THCudaTensor_newContiguous(state, self);
@@ -376,8 +429,6 @@ float THCudaTensor_prodall(THCState *state, THCudaTensor *self)
   return result;
 }
 
-
-
 struct dim4 {
     unsigned arr[4];
 
@@ -388,180 +439,23 @@ struct dim4 {
     __host__ __device__ unsigned& operator[](const unsigned& idx) { return arr[idx]; }
 };
 
-
-
-/* Reduce one of the outer dimensions of a tensor
- *
- * For an n-d tensor where the reduction is *not* along the innermost dimension:
- *
- * - blockIdx.x loops over the dimensions on the outside of the reduced dimension.
- * - blockIdx.y and threadIdx.x loop over the dimensions on the inside of the
- *   reduced dimension.
- * - Each thread sequentially reduces one row of the reduced dimension.
- *
- * Reduction along the innermost dimension is handled in a separate kernel.
- */
-template<class UnaryFunction, class BinaryFunction>
-__global__ void THCudaTensor_kernel_transformReduceOuterDim(float *tgt, float *src_,
-        unsigned num_orows, unsigned num_irows, unsigned row_size,
-        UnaryFunction unary_op, float init, BinaryFunction binary_op)
+void THCudaTensor_sum(THCState* state, THCudaTensor *self, THCudaTensor *src, long dimension)
 {
+  THCudaTensor_reduceDim(
+    state, self, src,
+    thrust::identity<float>(), thrust::plus<float>(), 0.0f, dimension);
 
-  for (unsigned orow = blockIdx.x; orow < num_orows; orow += gridDim.x) {
-    for (unsigned irow = blockIdx.y * blockDim.x + threadIdx.x; irow < num_irows; irow += gridDim.y * blockDim.x) {
-      float *src = src_ + orow * row_size * num_irows + irow;
-      float acc = init;
-
-      for (unsigned col = 0; col < row_size; ++col) {
-        acc = binary_op(acc, unary_op(*src));
-        src += num_irows;
-      }
-      tgt[orow * num_irows + irow] = float(acc);
-    }
-  }
+  THCudaCheck(cudaGetLastError());
 }
 
-
-
-template<class UnaryFunction, class BinaryFunction>
-__host__ void THCudaTensor_transformReduceOuterDim(THCState *state, THCudaTensor *tgt, THCudaTensor *src,
-        long rdim, UnaryFunction unary_op, float init, BinaryFunction binary_op)
+void THCudaTensor_prod(THCState* state, THCudaTensor *self, THCudaTensor *src, long dimension)
 {
-  unsigned ndim = THCudaTensor_nDimension(state, src);
-  unsigned num_orows = 1;
-  for (unsigned dim = 0; dim < rdim; dim++) {
-    num_orows *= THCudaTensor_size(state, src, dim);
-  }
-  unsigned row_size = THCudaTensor_size(state, src, rdim);
-  unsigned num_irows = 1;
-  for (unsigned dim = rdim + 1; dim < ndim; dim++) {
-    num_irows *= THCudaTensor_size(state, src, dim);
-  }
+  THCudaTensor_reduceDim(
+    state, self, src,
+    thrust::identity<float>(), thrust::multiplies<float>(), 1.0f, dimension);
 
-  dim3 threads(min(512, num_irows));
-  unsigned maxGridDim = 1024;
-  dim3 grid(min(maxGridDim, num_orows), min(maxGridDim, DIVUP(num_irows, threads.x)));
-
-  THCudaTensor_kernel_transformReduceOuterDim<<<grid, threads>>>(THCudaTensor_data(state, tgt),
-          THCudaTensor_data(state, src), num_orows, num_irows, row_size, unary_op, init, binary_op);
-  cudaError errcode = cudaGetLastError();
-  if(errcode != cudaSuccess) {
-    THError(cudaGetErrorString(errcode));
-  }
+  THCudaCheck(cudaGetLastError());
 }
-
-
-
-/* Reduce the innermost dimension of a tensor
- *
- * For an n-d tensor where the reduction is along the innermost dimension:
- *
- * - blockIdx.x loops over all the outer rows.
- * - Threads in the same block reduce one inner row in parallel.
- *
- * Reduction along other dimensions is handled in a separate kernel.
- */
-template<class UnaryFunction, class BinaryFunction>
-__global__ void THCudaTensor_kernel_transformReduceInnermostDim(float *tgt, float *src_,
-        unsigned num_rows, unsigned row_size, UnaryFunction unary_op, float init, BinaryFunction binary_op)
-{
-  __shared__ float sbuf[32][16];
-
-  for (unsigned block_row = blockIdx.x * blockDim.y; block_row < num_rows; block_row += blockDim.y * gridDim.x) {
-    unsigned row = block_row + threadIdx.y;
-    float acc = init;
-    if (row < num_rows) {
-      float *src = src_ + row * row_size;
-      // Sequential reduction within a thread.
-      for (unsigned col = threadIdx.x; col < row_size; col += blockDim.x) {
-        float val = unary_op(src[col]);
-        acc = binary_op(acc, val);
-      }
-    }
-
-    sbuf[threadIdx.y][threadIdx.x] = acc;
-
-    // Reduce intermediate values to single value.
-    float* line = &sbuf[threadIdx.y][0];
-    for (unsigned s = 8; s > 1; s >>= 1) {
-      if (row < num_rows && threadIdx.x < s) {
-        line[threadIdx.x] = binary_op(line[threadIdx.x], line[threadIdx.x + s]);
-      }
-      __syncthreads();
-    }
-
-    if (row < num_rows && threadIdx.x == 0) {
-      tgt[row] = binary_op(line[0], line[1]);
-    }
-    __syncthreads();
-  }
-}
-
-template<class UnaryFunction, class BinaryFunction>
-__host__ void THCudaTensor_transformReduceInnermostDim(THCState *state, THCudaTensor *tgt, THCudaTensor *src,
-        UnaryFunction unary_op, float init, BinaryFunction binary_op)
-{
-  unsigned ndim = THCudaTensor_nDimension(state, src);
-  unsigned num_rows = 1;
-  for (unsigned dim = 0; dim < ndim - 1; dim++) {
-    num_rows *= THCudaTensor_size(state, src, dim);
-  }
-  unsigned row_size = THCudaTensor_size(state, src, ndim - 1);
-
-  dim3 threads(16, 32);
-  dim3 grid(min(1024, DIVUP(num_rows, threads.y)));
-
-  THCudaTensor_kernel_transformReduceInnermostDim<<<grid, threads>>>(THCudaTensor_data(state, tgt),
-          THCudaTensor_data(state, src), num_rows, row_size, unary_op, init, binary_op);
-  cudaError errcode = cudaGetLastError();
-  if(errcode != cudaSuccess) {
-    THError(cudaGetErrorString(errcode));
-  }
-}
-
-
-template<class UnaryFunction, class BinaryFunction>
-void THCudaTensor_transformReduceDim(THCState *state, THCudaTensor *self_, THCudaTensor *src,
-        long dimension, UnaryFunction unary_op, float init, BinaryFunction binary_op)
-{
-  THArgCheck(dimension >= 0 && dimension < THCudaTensor_nDimension(state, src), 3, "dimension out of range");
-
-  THLongStorage *dim = THCudaTensor_newSizeOf(state, src);
-  THLongStorage_set(dim, dimension, 1);
-  THCudaTensor_resize(state, self_, dim, NULL);
-  THLongStorage_free(dim);
-
-  THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-  src = THCudaTensor_newContiguous(state, src);
-
-  if(dimension == THCudaTensor_nDimension(state, src)-1) {
-    THCudaTensor_transformReduceInnermostDim(state, self, src, unary_op, init, binary_op);
-  } else {
-    THCudaTensor_transformReduceOuterDim(state, self, src, dimension, unary_op, init, binary_op);
-  }
-
-  THCudaTensor_free(state, src);
-  THCudaTensor_freeCopyTo(state, self, self_);
-}
-
-
-template<class BinaryFunction>
-void THCudaTensor_reduceDim(THCState *state, THCudaTensor *self_, THCudaTensor *src, long dimension, float init, BinaryFunction binary_op)
-{
-  THCudaTensor_transformReduceDim(state, self_, src, dimension, thrust::identity<float>(), init, binary_op);
-}
-
-
-void THCudaTensor_sum(THCState *state, THCudaTensor *self, THCudaTensor *src, long dimension)
-{
-  return THCudaTensor_reduceDim(state, self, src, dimension, 0.0f, thrust::plus<float>());
-}
-
-void THCudaTensor_prod(THCState *state, THCudaTensor *self, THCudaTensor *src, long dimension)
-{
-  return THCudaTensor_reduceDim(state, self, src, dimension, 1.0f, thrust::multiplies<float>());
-}
-
 
 /* Perform an inclusive scan along an outer dimension of a tensor.
  *
@@ -1306,28 +1200,31 @@ void THCudaTensor_baddbmm(THCState *state, THCudaTensor *result, float beta, THC
     THCudaTensor_freeCopyTo(state, result_, result);
 }
 
-#define IMPLEMENT_CUDA_TENSOR_BASIC_FUNC(NAME, CFUNC)                                  \
-  struct NAME##_functor                                                                \
-  {                                                                                    \
-    __host__ __device__ float operator()(const float& x) const                         \
-    {                                                                                  \
-      return CFUNC(x);                                                                 \
-    }                                                                                  \
-  };                                                                                   \
-                                                                                       \
-  void THCudaTensor_##NAME(THCState *state, THCudaTensor *self_, THCudaTensor *src)    \
-  {                                                                                    \
-    THCudaTensor_resizeAs(state, self_, src);                                          \
-    THCudaTensor *self = THCudaTensor_newContiguous(state, self_);                     \
-    src = THCudaTensor_newContiguous(state, src);                                      \
-    long size = THCudaTensor_nElement(state, self);                                    \
-    thrust::device_ptr<float> self_data(THCudaTensor_data(state, self));               \
-    thrust::device_ptr<float> src_data(THCudaTensor_data(state, src));                 \
-                                                                                       \
-    thrust::transform(src_data, src_data+size, self_data, NAME##_functor());           \
-                                                                                       \
-    THCudaTensor_free(state, src);                                                     \
-    THCudaTensor_freeCopyTo(state, self, self_);                                       \
+#define IMPLEMENT_CUDA_TENSOR_BASIC_FUNC(NAME, CFUNC)                   \
+  struct Tensor##NAME##Op {                                             \
+    __device__ __forceinline__ void operator()(float* out, float* in) const { \
+      *out = CFUNC(*in);                                                \
+    }                                                                   \
+                                                                        \
+    __device__ __forceinline__ void operator()(float* v) const {        \
+      *v = CFUNC(*v);                                                   \
+    }                                                                   \
+  };                                                                    \
+                                                                        \
+  void THCudaTensor_##NAME(THCState* state, THCudaTensor* self_, THCudaTensor* src) { \
+    if (self_ == src) {                                                 \
+      if (!THCudaTensor_pointwiseApply1(state, self_, Tensor##NAME##Op())) { \
+        THArgCheck(false, 2, CUTORCH_DIM_WARNING); \
+      }                                                                 \
+    } else {                                                            \
+      THCudaTensor_resizeAs(state, self_, src);                         \
+                                                                        \
+      if (!THCudaTensor_pointwiseApply2(state, self_, src, Tensor##NAME##Op())) { \
+        THArgCheck(false, 2, CUTORCH_DIM_WARNING); \
+      }                                                                 \
+    }                                                                   \
+                                                                        \
+    THCudaCheck(cudaGetLastError());                                    \
   }
 
 IMPLEMENT_CUDA_TENSOR_BASIC_FUNC(log, log)
@@ -1348,145 +1245,145 @@ IMPLEMENT_CUDA_TENSOR_BASIC_FUNC(floor, floor)
 IMPLEMENT_CUDA_TENSOR_BASIC_FUNC(abs, fabs)
 IMPLEMENT_CUDA_TENSOR_BASIC_FUNC(round, roundf)
 
-struct pow_functor
-{
-  const float value;
-
-  pow_functor(float value_) : value(value_) {}
-
-    __host__ __device__ float operator()(const float& x) const
-  {
-    return pow(x, value);
+struct TensorPowOp {
+  TensorPowOp(float v) : val(v) {}
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    *out = powf(*in, val);
   }
+
+  __device__ __forceinline__ void operator()(float* v) {
+    *v = powf(*v, val);
+  }
+
+  const float val;
 };
 
 void THCudaTensor_pow(THCState *state, THCudaTensor *self_, THCudaTensor *src, float value)
 {
-  THCudaTensor_resizeAs(state, self_, src);
-  THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-  src = THCudaTensor_newContiguous(state, src);
-  long size = THCudaTensor_nElement(state, self);
-  thrust::device_ptr<float> self_data(THCudaTensor_data(state, self));
-  thrust::device_ptr<float> src_data(THCudaTensor_data(state, src));
+  if (self_ == src) {
+    if (!THCudaTensor_pointwiseApply1(state, self_, TensorPowOp(value))) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  } else {
+    THCudaTensor_resizeAs(state, self_, src);
 
-  thrust::transform(src_data, src_data+size, self_data, pow_functor(value));
+    if (!THCudaTensor_pointwiseApply2(state, self_, src, TensorPowOp(value))) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  }
 
-  THCudaTensor_free(state, src);
-  THCudaTensor_freeCopyTo(state, self, self_);
+  THCudaCheck(cudaGetLastError());
 }
 
-struct tpow_functor
-{
-  const float value;
+struct TensorTPowOp {
+  TensorTPowOp(float v) : val(v) {}
 
-  tpow_functor(float value_) : value(value_) {}
-
-  __host__ __device__ float operator()(const float& x) const
-  {
-    return pow(value, x);
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    *out = powf(val, *in);
   }
+
+  __device__ __forceinline__ void operator()(float* v) {
+    *v = powf(val, *v);
+  }
+
+  const float val;
 };
 
 void THCudaTensor_tpow(THCState *state, THCudaTensor *self_, float value, THCudaTensor *src)
 {
-  THCudaTensor_resizeAs(state, self_, src);
-  THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-  src = THCudaTensor_newContiguous(state, src);
-  long size = THCudaTensor_nElement(state, self);
-  thrust::device_ptr<float> self_data(THCudaTensor_data(state, self));
-  thrust::device_ptr<float> src_data(THCudaTensor_data(state, src));
+  if (self_ == src) {
+    if (!THCudaTensor_pointwiseApply1(state, self_, TensorTPowOp(value))) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  } else {
+    THCudaTensor_resizeAs(state, self_, src);
 
-  thrust::transform(src_data, src_data+size, self_data, tpow_functor(value));
+    if (!THCudaTensor_pointwiseApply2(state, self_, src, TensorTPowOp(value))) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  }
 
-  THCudaTensor_free(state, src);
-  THCudaTensor_freeCopyTo(state, self, self_);
+  THCudaCheck(cudaGetLastError());
 }
 
-struct atan2_functor
-{
-  __host__ __device__ float operator()(const float& x, const float& y) const
-    {
-      return atan2f(x, y);
+struct TensorATan2Op {
+  __device__ __forceinline__ void operator()(float* out, float* a, float* b) {
+    *out = atan2f(*a, *b);
   }
 };
 
 void THCudaTensor_atan2(THCState *state, THCudaTensor *self_, THCudaTensor *tx, THCudaTensor *ty)
 {
+  THArgCheck(THCudaTensor_nElement(state, tx) ==
+             THCudaTensor_nElement(state, ty), 3, "sizes do not match");
   THCudaTensor_resizeAs(state, self_, tx);
-  THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-  tx = THCudaTensor_newContiguous(state, tx);
-  ty = THCudaTensor_newContiguous(state, ty);
-  long size = THCudaTensor_nElement(state, self);
-  thrust::device_ptr<float> self_data(THCudaTensor_data(state, self));
-  thrust::device_ptr<float> tx_data(THCudaTensor_data(state, tx));
-  thrust::device_ptr<float> ty_data(THCudaTensor_data(state, ty));
 
-  thrust::transform(tx_data, tx_data+size, ty_data, self_data, atan2_functor());
+  if (!THCudaTensor_pointwiseApply3(state, self_, tx, ty, TensorATan2Op())) {
+    THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+  }
 
-  THCudaTensor_free(state, tx);
-  THCudaTensor_free(state, ty);
-  THCudaTensor_freeCopyTo(state, self, self_);
+  THCudaCheck(cudaGetLastError());
 }
 
-
-struct clamp_functor
-{
-  const float min_value;
-  const float max_value;
-
-  clamp_functor(float min_value_, float max_value_) : min_value(min_value_), max_value(max_value_) {}
-
-    __host__ __device__ float operator()(const float& x) const
-  {
-    if (x < min_value) {
-      return min_value;
-    }
-    if (x > max_value) {
-      return max_value;
-    }
-    return x;
+struct TensorClampOp {
+  TensorClampOp(float min, float max) : minValue(min), maxValue(max) {}
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    *out = max(min(*in, maxValue), minValue);
   }
+
+  __device__ __forceinline__ void operator()(float* v) {
+    *v = max(min(*v, maxValue), minValue);
+  }
+
+  const float minValue;
+  const float maxValue;
 };
 
 void THCudaTensor_clamp(THCState *state, THCudaTensor *self_, THCudaTensor *src, float min_value,
   float max_value)
 {
-  THArgCheck(THCudaTensor_nElement(state, self_) == THCudaTensor_nElement(state, src), 2, "sizes do not match");
-  THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-  src = THCudaTensor_newContiguous(state, src);
-  long size = THCudaTensor_nElement(state, self);
-  thrust::device_ptr<float> self_data(THCudaTensor_data(state, self));
-  thrust::device_ptr<float> src_data(THCudaTensor_data(state, src));
+  if (self_ == src) {
+    if (!THCudaTensor_pointwiseApply1(state, self_, TensorClampOp(min_value, max_value))) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  } else {
+    THCudaTensor_resizeAs(state, self_, src);
 
-  thrust::transform(src_data, src_data+size, self_data, clamp_functor(min_value,
-    max_value));
+    if (!THCudaTensor_pointwiseApply2(state, self_, src, TensorClampOp(min_value, max_value))) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  }
 
-  THCudaTensor_free(state, src);
-  THCudaTensor_freeCopyTo(state, self, self_);
+  THCudaCheck(cudaGetLastError());
 }
 
+struct TensorSignOp {
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    float orig = *in;
+    *out = (orig > 0) - (orig < 0);
+  }
 
-struct sign_functor
-{
-  __device__ float operator()(const float &v) const {
-    return (v > 0) - (v < 0);
+  __device__ __forceinline__ void operator()(float* v) {
+    float orig = *v;
+    *v = (orig > 0) - (orig < 0);
   }
 };
 
-
 void THCudaTensor_sign(THCState *state, THCudaTensor *self_, THCudaTensor *src)
 {
-  THCudaTensor_resizeAs(state, self_, src);
-  THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-  long size = THCudaTensor_nElement(state, self);
-  src = THCudaTensor_newContiguous(state, src);
-  thrust::device_ptr<float> self_data(THCudaTensor_data(state, self));
-  thrust::device_ptr<float> src_data(THCudaTensor_data(state, src));
+  if (self_ == src) {
+    if (!THCudaTensor_pointwiseApply1(state, self_, TensorSignOp())) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  } else {
+    THCudaTensor_resizeAs(state, self_, src);
 
-  thrust::transform(src_data, src_data+size, self_data, sign_functor());
+    if (!THCudaTensor_pointwiseApply2(state, self_, src, TensorSignOp())) {
+      THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+    }
+  }
 
-  THCudaTensor_free(state, src);
-  THCudaTensor_freeCopyTo(state, self, self_);
+  THCudaCheck(cudaGetLastError());
 }
 
 float THCudaTensor_meanall(THCState *state, THCudaTensor *self)
@@ -1749,158 +1646,179 @@ void THCudaTensor_logicalValue(THCState *state, THCudaTensor *self_, THCudaTenso
 {
   THCudaTensor_resizeAs(state, self_, src);
 
-  THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-  long size = THCudaTensor_nElement(state, self);
-  src = THCudaTensor_newContiguous(state, src);
-  thrust::device_ptr<float> self_data(THCudaTensor_data(state, self));
-  thrust::device_ptr<float> src_data(THCudaTensor_data(state, src));
+  if (!THCudaTensor_pointwiseApply2(state, self_, src, op)) {
+    THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+  }
 
-  thrust::transform(src_data, src_data+size, self_data, op);
-
-  THCudaTensor_free(state, src);
-  THCudaTensor_freeCopyTo(state, self, self_);
+  THCudaCheck(cudaGetLastError());
 }
 
+struct TensorLTValueOp {
+  TensorLTValueOp(float v) : value(v) {}
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    *out = (*in < value);
+  }
 
-struct partial_less_functor
-{
-  const float rhs;
-  partial_less_functor(float rhs) : rhs(rhs) {}
-  __host__ __device__ bool operator()(const float &lhs) const {return lhs < rhs;}
+  const float value;
 };
-
 
 void THCudaTensor_ltValue(THCState *state, THCudaTensor *self_, THCudaTensor *src, float value)
 {
-  THCudaTensor_logicalValue(state, self_, src, partial_less_functor(value));
+  THCudaTensor_logicalValue(state, self_, src, TensorLTValueOp(value));
 }
 
+struct TensorGTValueOp {
+  TensorGTValueOp(float v) : value(v) {}
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    *out = (*in > value);
+  }
 
-struct partial_greater_functor
-{
-  const float rhs;
-  partial_greater_functor(float rhs) : rhs(rhs) {}
-  __host__ __device__ bool operator()(const float &lhs) const {return lhs > rhs;}
+  const float value;
 };
-
 
 void THCudaTensor_gtValue(THCState *state, THCudaTensor *self_, THCudaTensor *src, float value)
 {
-  THCudaTensor_logicalValue(state, self_, src, partial_greater_functor(value));
+  THCudaTensor_logicalValue(state, self_, src, TensorGTValueOp(value));
 }
 
+struct TensorLEValueOp {
+  TensorLEValueOp(float v) : value(v) {}
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    *out = (*in <= value);
+  }
 
-struct partial_less_equal_functor
-{
-  const float rhs;
-  partial_less_equal_functor(float rhs) : rhs(rhs) {}
-  __host__ __device__ bool operator()(const float &lhs) const {return lhs <= rhs;}
+  const float value;
 };
-
 
 void THCudaTensor_leValue(THCState *state, THCudaTensor *self_, THCudaTensor *src, float value)
 {
-  THCudaTensor_logicalValue(state, self_, src, partial_less_equal_functor(value));
+  THCudaTensor_logicalValue(state, self_, src, TensorLEValueOp(value));
 }
 
+struct TensorGEValueOp {
+  TensorGEValueOp(float v) : value(v) {}
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    *out = (*in >= value);
+  }
 
-struct partial_greater_equal_functor
-{
-  const float rhs;
-  partial_greater_equal_functor(float rhs) : rhs(rhs) {}
-  __host__ __device__ bool operator()(const float &lhs) const {return lhs >= rhs;}
+  const float value;
 };
-
 
 void THCudaTensor_geValue(THCState *state, THCudaTensor *self_, THCudaTensor *src, float value)
 {
-  THCudaTensor_logicalValue(state, self_, src, partial_greater_equal_functor(value));
+  THCudaTensor_logicalValue(state, self_, src, TensorGEValueOp(value));
 }
 
+struct TensorEQValueOp {
+  TensorEQValueOp(float v) : value(v) {}
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    *out = (*in == value);
+  }
 
-struct partial_equal_functor
-{
-  const float rhs;
-  partial_equal_functor(float rhs) : rhs(rhs) {}
-  __host__ __device__ bool operator()(const float &lhs) const {return lhs == rhs;}
+  const float value;
 };
-
 
 void THCudaTensor_eqValue(THCState *state, THCudaTensor *self_, THCudaTensor *src, float value)
 {
-  THCudaTensor_logicalValue(state, self_, src, partial_equal_functor(value));
+  THCudaTensor_logicalValue(state, self_, src, TensorEQValueOp(value));
 }
 
+struct TensorNEValueOp {
+  TensorNEValueOp(float v) : value(v) {}
+  __device__ __forceinline__ void operator()(float* out, float* in) {
+    *out = (*in != value);
+  }
 
-struct partial_not_equal_functor
-{
-  const float rhs;
-  partial_not_equal_functor(float rhs) : rhs(rhs) {}
-  __host__ __device__ bool operator()(const float &lhs) const {return lhs != rhs;}
+  const float value;
 };
-
 
 void THCudaTensor_neValue(THCState *state, THCudaTensor *self_, THCudaTensor *src, float value)
 {
-  THCudaTensor_logicalValue(state, self_, src, partial_not_equal_functor(value));
+  THCudaTensor_logicalValue(state, self_, src, TensorNEValueOp(value));
 }
-
 
 template<class Op>
 void THCudaTensor_logicalTensor(THCState *state, THCudaTensor *self_, THCudaTensor *src1, THCudaTensor *src2, Op op)
 {
   THCudaTensor_resizeAs(state, self_, src1);
-  THArgCheck(THCudaTensor_nElement(state, src1) == THCudaTensor_nElement(state, src2), 3, "size do not match");
+  THArgCheck(THCudaTensor_nElement(state, src1) == THCudaTensor_nElement(state, src2), 3, "sizes do not match");
 
-  THCudaTensor *self = THCudaTensor_newContiguous(state, self_);
-  long size = THCudaTensor_nElement(state, self);
-  src1 = THCudaTensor_newContiguous(state, src1);
-  src2 = THCudaTensor_newContiguous(state, src2);
-  thrust::device_ptr<float> self_data(THCudaTensor_data(state, self));
-  thrust::device_ptr<float> src1_data(THCudaTensor_data(state, src1));
-  thrust::device_ptr<float> src2_data(THCudaTensor_data(state, src2));
+  if (!THCudaTensor_pointwiseApply3(state, self_, src1, src2, op)) {
+    THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+  }
 
-  thrust::transform(src1_data, src1_data+size, src2_data, self_data, op);
-
-  THCudaTensor_free(state, src1);
-  THCudaTensor_free(state, src2);
-  THCudaTensor_freeCopyTo(state, self, self_);
+  THCudaCheck(cudaGetLastError());
 }
 
+struct TensorLTOp {
+  __device__ __forceinline__ void operator()(float* out, float* a, float* b) {
+    *out = (float) (*a < *b);
+  }
+};
+
+struct TensorGTOp {
+  __device__ __forceinline__ void operator()(float* out, float* a, float* b) {
+    *out = (float) (*a > *b);
+  }
+};
+
+struct TensorLEOp {
+  __device__ __forceinline__ void operator()(float* out, float* a, float* b) {
+    *out = (float) (*a <= *b);
+  }
+};
+
+struct TensorGEOp {
+  __device__ __forceinline__ void operator()(float* out, float* a, float* b) {
+    *out = (float) (*a >= *b);
+  }
+};
+
+struct TensorEQOp {
+  __device__ __forceinline__ void operator()(float* out, float* a, float* b) {
+    *out = (float) (*a == *b);
+  }
+};
+
+struct TensorNEOp {
+  __device__ __forceinline__ void operator()(float* out, float* a, float* b) {
+    *out = (float) (*a != *b);
+  }
+};
 
 void THCudaTensor_ltTensor(THCState *state, THCudaTensor *self_, THCudaTensor *src1, THCudaTensor *src2)
 {
-  THCudaTensor_logicalTensor(state, self_, src1, src2, thrust::less<float>());
+  THCudaTensor_logicalTensor(state, self_, src1, src2, TensorLTOp());
 }
 
 
 void THCudaTensor_gtTensor(THCState *state, THCudaTensor *self_, THCudaTensor *src1, THCudaTensor *src2)
 {
-  THCudaTensor_logicalTensor(state, self_, src1, src2, thrust::greater<float>());
+  THCudaTensor_logicalTensor(state, self_, src1, src2, TensorGTOp());
 }
 
 
 void THCudaTensor_leTensor(THCState *state, THCudaTensor *self_, THCudaTensor *src1, THCudaTensor *src2)
 {
-  THCudaTensor_logicalTensor(state, self_, src1, src2, thrust::less_equal<float>());
+  THCudaTensor_logicalTensor(state, self_, src1, src2, TensorLEOp());
 }
 
 
 void THCudaTensor_geTensor(THCState *state, THCudaTensor *self_, THCudaTensor *src1, THCudaTensor *src2)
 {
-  THCudaTensor_logicalTensor(state, self_, src1, src2, thrust::greater_equal<float>());
+  THCudaTensor_logicalTensor(state, self_, src1, src2, TensorGEOp());
 }
 
 
 void THCudaTensor_eqTensor(THCState *state, THCudaTensor *self_, THCudaTensor *src1, THCudaTensor *src2)
 {
-  THCudaTensor_logicalTensor(state, self_, src1, src2, thrust::equal_to<float>());
+  THCudaTensor_logicalTensor(state, self_, src1, src2, TensorEQOp());
 }
 
 
 void THCudaTensor_neTensor(THCState *state, THCudaTensor *self_, THCudaTensor *src1, THCudaTensor *src2)
 {
-  THCudaTensor_logicalTensor(state, self_, src1, src2, thrust::not_equal_to<float>());
+  THCudaTensor_logicalTensor(state, self_, src1, src2, TensorNEOp());
 }
 
 
@@ -1916,6 +1834,12 @@ struct norm_functor
   }
 };
 
+struct partial_not_equal_functor
+{
+  const float rhs;
+  partial_not_equal_functor(float rhs) : rhs(rhs) {}
+  __host__ __device__ bool operator()(const float &lhs) const {return lhs != rhs;}
+};
 
 float THCudaTensor_normall(THCState *state, THCudaTensor *self, float value)
 {
@@ -1938,11 +1862,17 @@ float THCudaTensor_normall(THCState *state, THCudaTensor *self, float value)
 void THCudaTensor_norm(THCState *state, THCudaTensor* self, THCudaTensor* src, float value, long dimension)
 {
   if (value == 0.0f) {
-    THCudaTensor_transformReduceDim(state, self, src, dimension, partial_not_equal_functor(0.0f), (float)0, thrust::plus<float>());
+    THCudaTensor_reduceDim(state, self, src,
+                           partial_not_equal_functor(0.0f), thrust::plus<float>(),
+                           0.0f, dimension);
   } else {
-    THCudaTensor_transformReduceDim(state, self, src, dimension, norm_functor(value), (float)0, thrust::plus<float>());
+    THCudaTensor_reduceDim(state, self, src,
+                           norm_functor(value), thrust::plus<float>(),
+                           0.0f, dimension);
     THCudaTensor_pow(state, self, self, 1/value);
   }
+
+  THCudaCheck(cudaGetLastError());
 }
 
 __global__ void THCudaTensor_kernel_renorm(float *data, const float value, const long size, const float maxnorm)
@@ -2269,4 +2199,136 @@ void THCudaTensor_indexSelect(THCState *state, THCudaTensor *res_, THCudaTensor 
 
   THCudaCheck(cudaFree(stride_));
   THCudaTensor_free(state, indices_);
+}
+
+struct TensorMaskedFillOp {
+  TensorMaskedFillOp(float v) : value(v) {}
+  __device__ __forceinline__ void operator()(float* t, float* mask) {
+    // Really mask should be `0` or `1` but we can't propagate errors here.
+    const float maskVal = *mask;
+    if (maskVal != 0.0f) {
+      *t = value;
+    }
+  }
+
+  float value;
+};
+
+void THCudaTensor_maskedFill(THCState* state,
+                             THCudaTensor *tensor, THCudaTensor *mask, float value)
+{
+  THArgCheck(THCudaTensor_nElement(state, tensor) ==
+             THCudaTensor_nElement(state, mask),
+             2, "sizes do not match");
+
+  if (!THCudaTensor_pointwiseApply2(state, tensor, mask, TensorMaskedFillOp(value))) {
+    THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+  }
+
+  THCudaCheck(cudaGetLastError());
+}
+
+struct TensorMaskedCopyOp {
+  __device__ __forceinline__ void operator()(float* out, float* mask, float* in) {
+    // Really mask should be `0` or `1` but we can't propagate errors here.
+    if (*mask != 0.0f) {
+      *out = *in;
+    }
+  }
+};
+
+void THCudaTensor_maskedCopy(THCState* state,
+                             THCudaTensor *tensor, THCudaTensor *mask, THCudaTensor *src)
+{
+  THArgCheck(THCudaTensor_nElement(state, mask) ==
+             THCudaTensor_nElement(state, src),
+             2, "sizes do not match");
+
+  THCudaTensor_resizeAs(state, tensor, src);
+
+  if (!THCudaTensor_pointwiseApply3(state, tensor, mask, src, TensorMaskedCopyOp())) {
+    THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+  }
+
+  THCudaCheck(cudaGetLastError());
+}
+
+struct TensorMaskedSelectOp {
+  TensorMaskedSelectOp(float* t) : out(t) {}
+  __device__ __forceinline__ void operator()(float* mask, float* maskPrefixSum, float* in) {
+    // Really mask should be `0` or `1` but we can't propagate errors here.
+    if (*mask != 0.0f) {
+      out[(int) *maskPrefixSum] = *in;
+    }
+  }
+
+  float* out;
+};
+
+void THCudaTensor_maskedSelect(THCState* state,
+                               THCudaTensor *tensor, THCudaTensor *src, THCudaTensor *mask)
+{
+  THArgCheck(THCudaTensor_nElement(state, mask) == THCudaTensor_nElement(state, src),
+             2, "sizes do not match");
+
+  // Determine our output size
+  THCudaTensor* contigMask = THCudaTensor_newContiguous(state, mask);
+  int totalElements = (int) THCudaTensor_sumall(state, contigMask);
+  THCudaTensor_resize1d(state, tensor, totalElements);
+
+  // Use a prefix sum to determine the output locations of the masked elements
+  THCudaTensor* maskPrefixSum = THCudaTensor_new(state);
+  THCudaTensor_resizeAs(state, maskPrefixSum, mask);
+
+  thrust::device_ptr<float>
+    maskData(THCudaTensor_data(state, contigMask));
+  thrust::device_ptr<float>
+    maskPrefixSumData(THCudaTensor_data(state, maskPrefixSum));
+  thrust::exclusive_scan(maskData,
+                         maskData + THCudaTensor_nElement(state, contigMask),
+                         maskPrefixSumData);
+
+  // Then copy over the masked elements at their desired output index
+  bool status = THCudaTensor_pointwiseApply3(
+    state, contigMask, maskPrefixSum,
+    src, TensorMaskedSelectOp(THCudaTensor_data(state, tensor)));
+
+  THCudaTensor_free(state, contigMask);
+  THCudaTensor_free(state, maskPrefixSum);
+
+  if (!status) {
+    THArgCheck(false, 2, CUTORCH_DIM_WARNING);
+  }
+
+  THCudaCheck(cudaGetLastError());
+}
+
+void THCudaTensor_maskedFillByte(THCState* state, THCudaTensor *tensor, THByteTensor *mask, float value)
+{
+  THLongStorage* maskSize = THByteTensor_newSizeOf(mask);
+  THCudaTensor* maskCuda = THCudaTensor_newWithSize(state, maskSize, NULL);
+  THLongStorage_free(maskSize);
+  THCudaTensor_copyByte(state, maskCuda, mask);
+  THCudaTensor_maskedFill(state, tensor, maskCuda, value);
+  THCudaTensor_free(state, maskCuda);
+}
+
+void THCudaTensor_maskedCopyByte(THCState* state, THCudaTensor *tensor, THByteTensor *mask, THCudaTensor *src)
+{
+  THLongStorage* maskSize = THByteTensor_newSizeOf(mask);
+  THCudaTensor* maskCuda = THCudaTensor_newWithSize(state, maskSize, NULL);
+  THLongStorage_free(maskSize);
+  THCudaTensor_copyByte(state, maskCuda, mask);
+  THCudaTensor_maskedCopy(state, tensor, maskCuda, src);
+  THCudaTensor_free(state, maskCuda);
+}
+
+void THCudaTensor_maskedSelectByte(THCState* state, THCudaTensor *tensor, THCudaTensor *src, THByteTensor *mask)
+{
+  THLongStorage* maskSize = THByteTensor_newSizeOf(mask);
+  THCudaTensor* maskCuda = THCudaTensor_newWithSize(state, maskSize, NULL);
+  THLongStorage_free(maskSize);
+  THCudaTensor_copyByte(state, maskCuda, mask);
+  THCudaTensor_maskedSelect(state, tensor, src, maskCuda);
+  THCudaTensor_free(state, maskCuda);
 }

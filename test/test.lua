@@ -3,7 +3,7 @@ if not cutorch then
    require 'cutorch'
    runtests = true
 end
-local tester
+
 local test = {}
 local msize = 100
 local minsize = 100
@@ -1250,6 +1250,47 @@ function test.get_device()
     end
 end
 
+function test.multi_gpu_copy_noncontig()
+   local srcDevice = 1
+   local dstDevice = cutorch.getDeviceCount()
+
+   local t1, t2
+   for transposeSrc = 0,1 do
+     for transposeDst = 0,1 do
+        cutorch.withDevice(srcDevice,
+           function() t1 = torch.CudaTensor(100000, 1000):fill(1) end)
+        cutorch.withDevice(dstDevice,
+           function() t2 = torch.CudaTensor(100000, 1000):fill(2) end)
+
+        if transposeSrc == 1 then -- maybe make t1 non-contiguous
+           cutorch.withDevice(srcDevice, function() t1=t1:transpose(1,2) end)
+        end
+        if transposeDst == 1 then -- maybe make t2 non-contiguous
+           cutorch.withDevice(dstDevice, function() t2=t2:transpose(1,2) end)
+        end
+        cutorch.synchronize()
+
+        -- try to induce a race on t2
+        cutorch.withDevice(dstDevice, function() t2:fill(3) end)
+
+        -- perform the copy
+        -- CudaTensor:copy() should not depend on the current device
+        t2:copy(t1)
+
+        -- try to induce a race on t1
+        cutorch.withDevice(srcDevice, function() t1:fill(4) end)
+
+        -- only synchronize with dstDevice because
+        -- previous line guarantees synchronization with srcDevice
+        cutorch.withDevice(dstDevice, function() cutorch.synchronize() end)
+
+        local t2_max = t2:max()
+        assert(t2_max == 1, "bad copy, transposeSrc= " .. transposeSrc ..
+               " transposeDst= " .. transposeDst .. ". t2:max() = " .. t2_max)
+      end
+   end
+end
+
 function test.reset_device()
    local sz = math.floor(torch.uniform(minsize,maxsize))
 
@@ -1284,3 +1325,4 @@ end
 if runtests then
    cutorch.test()
 end
+return test
