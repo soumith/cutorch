@@ -1363,6 +1363,55 @@ function test.maskedSelect()
    local y_cuda = x[x:gt(0.5)]
    tester:assertTensorEq(y, y_cuda:float(), 0.00001, "Error in maskedSelect indexing x[x:gt(y)]")
 
+   -- indexing maskedSelect (non-contiguous) a[a:gt(0.5)] for example
+   local x = torch.randn(n_row, n_col):float()
+   local y = x:t()[x:t():gt(0.5)]
+   x=x:cuda()
+   mask=mask:cuda()
+   local y_cuda = x:t()[x:t():gt(0.5)]
+   tester:assertTensorEq(y, y_cuda:float(), 0.00001,
+			 "Error in maskedSelect indexing (non-contiguous) x[x:gt(y)]")
+end
+
+function test.maskedFill()
+   local n_row = math.random(minsize,maxsize)
+   local n_col = math.random(minsize,maxsize)
+   local n_idx = math.random(n_col)
+
+   -- contiguous, no result tensor, cuda mask
+   local gt = torch.randn(n_row, n_col):float()
+   local x = gt:clone()
+   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   x:maskedFill(mask, 334)
+   local x_cuda=gt:cuda()
+   mask=mask:cuda()
+   x_cuda:maskedFill(mask, 334)
+   tester:assertTensorEq(x, x_cuda:float(), 0.00001, "Error in maskedFill")
+   
+   -- non-contiguous, no result tensor, cuda mask
+   local x = gt:clone()
+   mask = mask:byte()
+   x:t():maskedFill(mask, 334)
+   local x_cuda = gt:cuda()
+   mask=mask:cuda()
+   x_cuda:t():maskedFill(mask, 334)
+   tester:assertTensorEq(x, x_cuda:float(), 0.00001, "Error in maskedFill non-contiguous")
+
+   -- indexing maskedFill a[a:gt(0.5)] for example
+   local x = gt:clone()
+   x[x:gt(0.5)] = 334
+   local x_cuda = gt:cuda()
+   x_cuda[x_cuda:gt(0.5)] = 334
+   tester:assertTensorEq(x, x_cuda:float(), 0.00001, "Error in maskedFill indexing x[x:gt(y)]")
+
+   -- indexing maskedFill a[a:gt(0.5)] for example
+   local x = gt:clone()
+   x:t()[x:t():gt(0.5)] = 334
+   local x_cuda = gt:cuda()
+   x_cuda:t()[x_cuda:t():gt(0.5)] = 334
+   tester:assertTensorEq(x, x_cuda:float(), 0.00001,
+			 "Error in maskedFill non-contiguous indexing x[x:gt(y)]")
+
 end
 
 function cutorch.test(tests)
@@ -1372,10 +1421,10 @@ function cutorch.test(tests)
    tester = torch.Tester()
    tester:add(test)
    tester:run(tests)
-   print ''
-   for module,tm in pairs(times) do
-      print(module .. ': \t average speedup is ' .. (tm.cpu / (tm.gpu or 1e6)))
-   end
+   -- print ''
+   -- for module,tm in pairs(times) do
+   -- print(module .. ': \t average speedup is ' .. (tm.cpu / (tm.gpu or 1e6)))
+   -- end
 end
 
 if runtests then
