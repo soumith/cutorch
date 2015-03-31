@@ -35,6 +35,8 @@ local function isEqual(a, b, tolerance, ...)
 end
 
 local function compareFloatAndCuda(x, fn, ...)
+   local args = {...}
+   args['input'] = x
    local x_cpu    = x:float()
    local x_cuda   = x_cpu:cuda()
    local res1_cpu, res2_cpu, res3_cpu, res4_cpu
@@ -51,14 +53,30 @@ local function compareFloatAndCuda(x, fn, ...)
       error("Incorrect function type")
    end
    local tolerance = 1e-5
-   tester:assert(isEqual(res1_cpu, res1_cuda, tolerance),
-      string.format("Divergent results between CPU and CUDA for function '%s'", tostring(fn)))
-   tester:assert(isEqual(res2_cpu, res2_cuda, tolerance),
-                 string.format("Divergent results between CPU and CUDA for function '%s'", tostring(fn)))
-   tester:assert(isEqual(res3_cpu, res3_cuda, tolerance),
-                 string.format("Divergent results between CPU and CUDA for function '%s'", tostring(fn)))
-   tester:assert(isEqual(res4_cpu, res4_cuda, tolerance),
-                 string.format("Divergent results between CPU and CUDA for function '%s'", tostring(fn)))
+   if not isEqual(res1_cpu, res1_cuda, tolerance) then
+      print(args)
+      tester:assert(false,
+                    string.format("Divergent results between CPU and CUDA" ..
+                                  " for function '%s' (return value 1)", tostring(fn)))
+   end
+   if not isEqual(res2_cpu, res2_cuda, tolerance) then
+      print(args)
+      tester:assert(false,
+                    string.format("Divergent results between CPU and CUDA" ..
+                                  " for function '%s' (return value 2)", tostring(fn)))
+   end
+   if not isEqual(res3_cpu, res3_cuda, tolerance) then
+      print(args)
+      tester:assert(false,
+                    string.format("Divergent results between CPU and CUDA" ..
+                                  " for function '%s' (return value 3)", tostring(fn)))
+   end
+   if not isEqual(res4_cpu, res4_cuda, tolerance) then
+      print(args)
+      tester:assert(false,
+                    string.format("Divergent results between CPU and CUDA" ..
+                                  " for function '%s' (return value 4)", tostring(fn)))
+   end
 end
 
 local function compareFloatAndCudaTensorArgs(x, fn, ...)
@@ -1315,16 +1333,16 @@ function test.maskedSelect()
 
    -- contiguous, no result tensor, cuda mask
    local x = torch.randn(n_row, n_col):float()
-   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   local mask = torch.ByteTensor(n_row,n_col):bernoulli()
    local y = x:maskedSelect(mask)
    x=x:cuda()
    mask=mask:cuda()
    local y_cuda = x:maskedSelect(mask)
    tester:assertTensorEq(y, y_cuda:float(), 0.00001, "Error in maskedSelect")
-   
+
    -- non-contiguous, no result tensor, cuda mask
    local x = torch.randn(n_row, n_col):float()
-   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   local mask = torch.ByteTensor(n_row,n_col):bernoulli()
    local y = x:t():maskedSelect(mask)
    x=x:cuda()
    mask=mask:cuda()
@@ -1333,7 +1351,7 @@ function test.maskedSelect()
 
    -- contiguous, with result tensor, cuda mask
    local x = torch.randn(n_row, n_col):float()
-   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   local mask = torch.ByteTensor(n_row,n_col):bernoulli()
    local y = torch.FloatTensor()
    y:maskedSelect(x, mask)
    x=x:cuda()
@@ -1341,10 +1359,10 @@ function test.maskedSelect()
    local y_cuda = torch.CudaTensor()
    y_cuda:maskedSelect(x, mask)
    tester:assertTensorEq(y, y_cuda:float(), 0.00001, "Error in maskedSelect (with result)")
-   
+
    -- non-contiguous, with result tensor, cuda mask
    local x = torch.randn(n_row, n_col):float()
-   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   local mask = torch.ByteTensor(n_row,n_col):bernoulli()
    local y = torch.FloatTensor()
    y:maskedSelect(x:t(), mask)
    x=x:cuda()
@@ -1381,7 +1399,7 @@ function test.maskedCopy()
    -- contiguous, cuda mask
    local x = torch.randn(n_row, n_col):float()
    local y = x:clone():fill(-1)
-   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   local mask = torch.ByteTensor(n_row,n_col):bernoulli()
    y:maskedCopy(mask, x:clone())
    local y_cuda=x:cuda():fill(-1)
    mask=mask:cuda()
@@ -1391,7 +1409,7 @@ function test.maskedCopy()
    -- non-contiguous source, cuda mask
    local x = torch.randn(n_row, n_col):float()
    local y = x:clone():fill(-1)
-   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   local mask = torch.ByteTensor(n_row,n_col):bernoulli()
    y:maskedCopy(mask, x:t())
    local y_cuda=x:cuda():fill(-1)
    x=x:cuda()
@@ -1402,7 +1420,7 @@ function test.maskedCopy()
    -- non-contiguous result, cuda mask
    local x = torch.randn(n_row, n_col):float()
    local y = x:clone():fill(-1)
-   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   local mask = torch.ByteTensor(n_row,n_col):bernoulli()
    y:t():maskedCopy(mask, x:t())
    local y_cuda=x:cuda():fill(-1)
    x=x:cuda()
@@ -1449,13 +1467,13 @@ function test.maskedFill()
    -- contiguous, no result tensor, cuda mask
    local gt = torch.randn(n_row, n_col):float()
    local x = gt:clone()
-   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   local mask = torch.ByteTensor(n_row,n_col):bernoulli()
    x:maskedFill(mask, 334)
    local x_cuda=gt:cuda()
    mask=mask:cuda()
    x_cuda:maskedFill(mask, 334)
    tester:assertTensorEq(x, x_cuda:float(), 0.00001, "Error in maskedFill")
-   
+
    -- non-contiguous, no result tensor, cuda mask
    local x = gt:clone()
    mask = mask:byte()
@@ -1480,6 +1498,16 @@ function test.maskedFill()
    tester:assertTensorEq(x, x_cuda:float(), 0.00001,
 			 "Error in maskedFill non-contiguous indexing x[x:gt(y)]")
 
+end
+
+function test.sort()
+   local n_row = math.random(minsize,maxsize)
+   local n_col = math.random(minsize,maxsize)
+   local x = torch.randn(n_row, n_col):float()
+   compareFloatAndCuda(x, 'sort', 1, true)
+   compareFloatAndCuda(x, 'sort', 1, false)
+   compareFloatAndCuda(x, 'sort', 2, true)
+   compareFloatAndCuda(x, 'sort', 2, false)
 end
 
 function cutorch.test(tests)

@@ -9,8 +9,17 @@ SET(src-cuda
   THCStorageCopy.cu
   THCTensor.cu
   THCTensorCopy.cu
-  THCTensorMath.cu
   THCTensorMath2.cu
+  THCTensorMathBlas.cu
+  THCTensorMathCompare.cu
+  THCTensorMathCompareT.cu
+  THCTensorMath.cu
+  THCTensorMathPairwise.cu
+  THCTensorMathPointwise.cu
+  THCTensorMathScan.cu
+  THCTensorMathTransformReduce.cu
+  THCTensorMasked.cu
+  THCTensorIndex.cu
   THCTensorConv.cu
   THCTensorRandom.cu
   THCApply.cu
