@@ -43,29 +43,10 @@ void THCudaTensor_maskedFill(THCState* state,
   THCudaCheck(cudaGetLastError());
 }
 
-struct TensorMaskedCopyOp {
-  __device__ __forceinline__ void operator()(float* out, float* mask, float* in) {
-    // Really mask should be `0` or `1` but we can't propagate errors here.
-    if (*mask != 0.0f) {
-      *out = *in;
-    }
-  }
-};
-
 void THCudaTensor_maskedCopy(THCState* state,
                              THCudaTensor *tensor, THCudaTensor *mask, THCudaTensor *src)
 {
-  THArgCheck(THCudaTensor_nElement(state, mask) ==
-             THCudaTensor_nElement(state, src),
-             2, "sizes do not match");
-
-  THCudaTensor_resizeAs(state, tensor, src);
-
-  if (!THCudaTensor_pointwiseApply3(state, tensor, mask, src, TensorMaskedCopyOp())) {
-    THArgCheck(false, 2, CUTORCH_DIM_WARNING);
-  }
-
-  THCudaCheck(cudaGetLastError());
+  THError("maskedCopy is not yet implemented for CUDA");
 }
 
 struct TensorMaskedSelectOp {
