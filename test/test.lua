@@ -1309,6 +1309,62 @@ function test.reset_device()
    tester:assertTensorEq(tf, u:float(), 1e-6, "values not equal after restoring the RNG state")
 end
 
+function test.maskedSelect()
+   local n_row = math.random(minsize,maxsize)
+   local n_col = math.random(minsize,maxsize)
+   local n_idx = math.random(n_col)
+
+   -- contiguous, no result tensor, cuda mask
+   local x = torch.randn(n_row, n_col):float()
+   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   local y = x:maskedSelect(mask)
+   x=x:cuda()
+   mask=mask:cuda()
+   local y_cuda = x:maskedSelect(mask)
+   tester:assertTensorEq(y, y_cuda:float(), 0.00001, "Error in maskedSelect")
+   
+   -- non-contiguous, no result tensor, cuda mask
+   local x = torch.randn(n_row, n_col):float()
+   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   local y = x:t():maskedSelect(mask)
+   x=x:cuda()
+   mask=mask:cuda()
+   local y_cuda = x:t():maskedSelect(mask)
+   tester:assertTensorEq(y, y_cuda:float(), 0.00001, "Error in maskedSelect non-contiguous")
+
+   -- contiguous, with result tensor, cuda mask
+   local x = torch.randn(n_row, n_col):float()
+   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   local y = torch.FloatTensor()
+   y:maskedSelect(x, mask)
+   x=x:cuda()
+   mask=mask:cuda()
+   local y_cuda = torch.CudaTensor()
+   y_cuda:maskedSelect(x, mask)
+   tester:assertTensorEq(y, y_cuda:float(), 0.00001, "Error in maskedSelect (with result)")
+   
+   -- non-contiguous, with result tensor, cuda mask
+   local x = torch.randn(n_row, n_col):float()
+   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   local y = torch.FloatTensor()
+   y:maskedSelect(x:t(), mask)
+   x=x:cuda()
+   mask=mask:cuda()
+   local y_cuda = torch.CudaTensor()
+   y_cuda:maskedSelect(x:t(), mask)
+   tester:assertTensorEq(y, y_cuda:float(), 0.00001,
+			 "Error in maskedSelect non-contiguous (with result)")
+
+   -- indexing maskedSelect a[a:gt(0.5)] for example
+   local x = torch.randn(n_row, n_col):float()
+   local y = x[x:gt(0.5)]
+   x=x:cuda()
+   mask=mask:cuda()
+   local y_cuda = x[x:gt(0.5)]
+   tester:assertTensorEq(y, y_cuda:float(), 0.00001, "Error in maskedSelect indexing x[x:gt(y)]")
+
+end
+
 function cutorch.test(tests)
    math.randomseed(os.time())
    torch.manualSeed(os.time())

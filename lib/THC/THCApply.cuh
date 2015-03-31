@@ -579,13 +579,4 @@ bool THCudaTensor_pointwiseApply3(THCState* state,
 
 #undef THC_APPLY_THREADS_PER_BLOCK
 
-// Implementation of copyIgnoringOverlaps, defined after pointwiseApply2.
-void THCudaTensor_copyIgnoringOverlaps(THCState* state,
-                                       THCudaTensor* dst,
-                                       THCudaTensor* src) {
-  THCudaTensor_pointwiseApply2(state, dst, src, CopyOp<float>(),
-                               ReadOnly, // ignore overwrites
-                               ReadOnly);
-}
-
 #endif // THC_APPLY_INC

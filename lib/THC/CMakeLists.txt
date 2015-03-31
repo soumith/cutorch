@@ -1,7 +1,20 @@
 SET(src
     THCGeneral.c THCStorage.c THCStorageCopy.c THCTensor.c THCTensorCopy.c)
 
-SET(src-cuda THC.cu THCReduceApplyUtils.cu THCTensorSort.cu)
+SET(src-cuda
+  THCReduceApplyUtils.cu
+  THCTensorSort.cu
+  THCBlas.cu
+  THCStorage.cu
+  THCStorageCopy.cu
+  THCTensor.cu
+  THCTensorCopy.cu
+  THCTensorMath.cu
+  THCTensorMath2.cu
+  THCTensorConv.cu
+  THCTensorRandom.cu
+  THCApply.cu
+  )
 
 CUDA_ADD_LIBRARY(THC SHARED ${src} ${src-cuda})
 CUDA_ADD_CUBLAS_TO_TARGET(THC)
