@@ -1312,7 +1312,6 @@ end
 function test.maskedSelect()
    local n_row = math.random(minsize,maxsize)
    local n_col = math.random(minsize,maxsize)
-   local n_idx = math.random(n_col)
 
    -- contiguous, no result tensor, cuda mask
    local x = torch.randn(n_row, n_col):float()
@@ -1373,10 +1372,79 @@ function test.maskedSelect()
 			 "Error in maskedSelect indexing (non-contiguous) x[x:gt(y)]")
 end
 
+--[[
+waiting on clarification for: https://github.com/torch/torch7/pull/187
+function test.maskedCopy()
+   local n_row = math.random(minsize,maxsize)
+   local n_col = math.random(minsize,maxsize)
+
+   -- contiguous, cuda mask
+   local x = torch.randn(n_row, n_col):float()
+   local y = x:clone():fill(-1)
+   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   y:maskedCopy(mask, x:clone())
+   local y_cuda=x:cuda():fill(-1)
+   mask=mask:cuda()
+   x=x:cuda()
+   y_cuda:maskedCopy(mask, x)
+   tester:assertTensorEq(y, y_cuda:float(), 0.00001, "Error in maskedCopy (contiguous)")
+   -- non-contiguous source, cuda mask
+   local x = torch.randn(n_row, n_col):float()
+   local y = x:clone():fill(-1)
+   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   y:maskedCopy(mask, x:t())
+   local y_cuda=x:cuda():fill(-1)
+   x=x:cuda()
+   mask=mask:cuda()
+   y_cuda:maskedCopy(mask, x:t())
+   tester:assertTensorEq(y, y_cuda:float(), 0.00001, "Error in maskedCopy (non-contiguous source)")
+
+   -- non-contiguous result, cuda mask
+   local x = torch.randn(n_row, n_col):float()
+   local y = x:clone():fill(-1)
+   local mask = torch.DoubleTensor():rand(n_row*n_col):mul(2):floor():byte():resize(n_row,n_col)
+   y:t():maskedCopy(mask, x:t())
+   local y_cuda=x:cuda():fill(-1)
+   x=x:cuda()
+   mask=mask:cuda()
+   y_cuda:t():maskedCopy(mask, x:t())
+   tester:assertTensorEq(y, y_cuda:float(), 0.00001, "Error in maskedCopy (non-contiguous dest)")
+
+   -- indexing maskedCopy a[a:gt(0.5)] for example
+   local gt = torch.randn(n_row, n_col):float()
+   local x = gt:clone()
+   local y = torch.randn(n_row, n_col):float()
+   x[x:gt(0.5)] = y
+   local x_cuda = gt:cuda()
+   y=y:cuda()
+   x_cuda[x_cuda:gt(0.5)] = y
+   tester:assertTensorEq(x, x_cuda:float(), 0.00001, "Error in maskedCopy indexing x[x:gt(y)]")
+
+   -- indexing maskedCopy non-contiguous src a[a:gt(0.5)] for example
+   local gt = torch.randn(n_row, n_col):float()
+   local x = gt:clone()
+   local y = torch.randn(n_row, n_col):float()
+   x[x:gt(0.5)] = y:t()
+   local x_cuda = gt:cuda()
+   y=y:cuda()
+   x_cuda[x_cuda:gt(0.5)] = y:t()
+   tester:assertTensorEq(x, x_cuda:float(), 0.00001, "Error in maskedCopy indexing x[x:gt(y)]")
+
+   -- indexing maskedCopy non-contiguous dst a[a:gt(0.5)] for example
+   local gt = torch.randn(n_row, n_col):float()
+   local x = gt:clone()
+   local y = torch.randn(n_row, n_col):float()
+   x:t()[x:t():gt(0.5)] = y
+   local x_cuda = gt:cuda()
+   y=y:cuda()
+   x_cuda:t()[x_cuda:t():gt(0.5)] = y:t()
+   tester:assertTensorEq(x, x_cuda:float(), 0.00001, "Error in maskedCopy indexing x[x:gt(y)]")
+end
+]]--
+
 function test.maskedFill()
    local n_row = math.random(minsize,maxsize)
    local n_col = math.random(minsize,maxsize)
-   local n_idx = math.random(n_col)
 
    -- contiguous, no result tensor, cuda mask
    local gt = torch.randn(n_row, n_col):float()
