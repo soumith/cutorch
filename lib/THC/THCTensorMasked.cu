@@ -111,12 +111,7 @@ void THCudaTensor_maskedFillByte(THCState* state, THCudaTensor *tensor, THByteTe
 
 void THCudaTensor_maskedCopyByte(THCState* state, THCudaTensor *tensor, THByteTensor *mask, THCudaTensor *src)
 {
-  THLongStorage* maskSize = THByteTensor_newSizeOf(mask);
-  THCudaTensor* maskCuda = THCudaTensor_newWithSize(state, maskSize, NULL);
-  THLongStorage_free(maskSize);
-  THCudaTensor_copyByte(state, maskCuda, mask);
-  THCudaTensor_maskedCopy(state, tensor, maskCuda, src);
-  THCudaTensor_free(state, maskCuda);
+  THError("maskedCopyByte is not yet implemented for CUDA");
 }
 
 void THCudaTensor_maskedSelectByte(THCState* state, THCudaTensor *tensor, THCudaTensor *src, THByteTensor *mask)

@@ -295,6 +295,12 @@ wrap("maskedFill",
       {name=Tensor},
       {name=real}})
 
+wrap("maskedCopy",
+     cname("maskedCopy"),
+     {{name=Tensor, returned=true, method={default='nil'}},
+	{name=Tensor},
+	{name=Tensor}})
+
 wrap("maskedSelect",
      cname("maskedSelect"),
      {{name=Tensor, returned=true, default=true},
