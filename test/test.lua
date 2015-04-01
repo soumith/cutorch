@@ -1247,7 +1247,7 @@ function test.multi_gpu_random()
    for i = 2, device_count do
       cutorch.setDevice(i)
       local actual = torch.CudaTensor(n):uniform():float()
-      assert(isEqual(expected, actual), "random tensors dont seem to be equal")
+      tester:assert(isEqual(expected, actual), "random tensors dont seem to be equal")
    end
    cutorch.setRNGState(rs) -- cleanup after yourself
 end
@@ -1260,11 +1260,11 @@ function test.get_device()
     end
     -- Unallocated tensors are on device 0
     for i = 1,device_count do
-        assert(tensors[i]:getDevice() == 0, "unallocated tensor does not have deviceID 0")
-        -- Now allocate it
-        cutorch.setDevice(i)
-        tensors[i]:resize(1, 2, 3)
-        assert(tensors[i]:getDevice() == i, "tensor does not have the correct deviceID")
+       tester:assert(tensors[i]:getDevice() == 0, "unallocated tensor does not have deviceID 0")
+       -- Now allocate it
+       cutorch.setDevice(i)
+       tensors[i]:resize(1, 2, 3)
+       tester:assert(tensors[i]:getDevice() == i, "tensor does not have the correct deviceID")
     end
 end
 
@@ -1303,7 +1303,7 @@ function test.multi_gpu_copy_noncontig()
         cutorch.withDevice(dstDevice, function() cutorch.synchronize() end)
 
         local t2_max = t2:max()
-        assert(t2_max == 1, "bad copy, transposeSrc= " .. transposeSrc ..
+        tester:assert(t2_max == 1, "bad copy, transposeSrc= " .. transposeSrc ..
                " transposeDst= " .. transposeDst .. ". t2:max() = " .. t2_max)
       end
    end
