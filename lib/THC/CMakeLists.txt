@@ -3,7 +3,6 @@ SET(src
 
 SET(src-cuda
   THCReduceApplyUtils.cu
-  THCTensorSort.cu
   THCBlas.cu
   THCStorage.cu
   THCStorageCopy.cu
@@ -45,7 +44,6 @@ INSTALL(FILES
           THCTensorRandom.h
           THCTensorMath.h
           THCTensorConv.h
-          THCTensorSort.h
           THCApply.cuh
           THCReduce.cuh
           THCReduceApplyUtils.cuh

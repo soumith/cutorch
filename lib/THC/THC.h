@@ -10,6 +10,5 @@
 #include "THCTensorRandom.h"
 #include "THCTensorMath.h"
 #include "THCTensorConv.h"
-#include "THCTensorSort.h"
 
 #endif

@@ -1500,16 +1500,6 @@ function test.maskedFill()
 
 end
 
-function test.sort()
-   local n_row = math.random(minsize,maxsize)
-   local n_col = math.random(minsize,maxsize)
-   local x = torch.randn(n_row, n_col):float()
-   compareFloatAndCuda(x, 'sort', 1, true)
-   compareFloatAndCuda(x, 'sort', 1, false)
-   compareFloatAndCuda(x, 'sort', 2, true)
-   compareFloatAndCuda(x, 'sort', 2, false)
-end
-
 function cutorch.test(tests)
    math.randomseed(os.time())
    torch.manualSeed(os.time())
